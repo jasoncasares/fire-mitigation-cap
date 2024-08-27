@@ -3,7 +3,16 @@ from pyspark.sql.functions import to_date, year, month, dayofmonth
 import requests
 from io import StringIO
 
-spark = SparkSession.builder.appName("NASA Backfill").getOrCreate()
+spark = SparkSession.builder \
+    .appName("NASA FIRMS Data Processing") \
+    .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
+    .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog") \
+    .config("spark.sql.catalog.spark_catalog.type", "hive") \
+    .config("spark.sql.catalog.local", "org.apache.iceberg.spark.SparkCatalog") \
+    .config("spark.sql.catalog.local.type", "hadoop") \
+    .config("spark.sql.catalog.local.warehouse", "s3://fire-mitigation-data/warehouse") \
+    .getOrCreate()
+
 
 
 nasa_firms_url = "https://firms.modaps.eosdis.nasa.gov/data/country/modis/2023/modis_2023_United_States.csv"
@@ -20,11 +29,14 @@ df = df.withColumn("acq_date", to_date("acq_date", "yyyy-MM-dd")) \
        .withColumn("year", year("acq_date")) \
        .withColumn("month", month("acq_date")) \
        .withColumn("day", dayofmonth("acq_date"))
-# Write data to parquet
-output_path = "s3://fire-mitigation-data/nasa_firms/backfill/nasa_firms_2023_United_States.parquet"
-df.write \
-    .partitionBy("year", "month", "day") \
-    .parquet(output_path, mode="overwrite")
+
+# Write the data to an Iceberg table
+table_name = "local.db.nasa_firms_data"
+(df.writeTo(table_name)
+   .partitionBy("year", "month", "day")
+   .tableProperty("write.format.default", "parquet")
+   .tableProperty("write.parquet.compression-codec", "snappy")
+   .createOrReplace())
 
 # Stop the Spark session
 spark.stop()
