@@ -157,13 +157,11 @@ Justification:
 
 1. Integrate machine learning models for fire spread prediction
 2. Incorporate additional data sources like vegetation indices and topography
-3. Develop a mobile app for field teams to access real-time fire information
-4. Implement automated alerting system for high-risk fire conditions
+3. Implement automated alerting system for high-risk fire conditions
+4. Add real estate data to the data warehouse
 
 ## 📊 Project Outcomes
 
 [Include screenshots or links to your dashboard, sample reports, and any other relevant outputs]
 
 ---
-
-This README provides an overview of the Fire Mitigation Data Engineering Project. For detailed implementation instructions, please refer to the individual component directories within this repository.

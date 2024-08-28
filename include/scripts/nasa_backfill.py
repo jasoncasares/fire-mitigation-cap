@@ -3,14 +3,19 @@ from pyspark.sql.functions import to_date, year, month, dayofmonth
 import requests
 from io import StringIO
 
+# S3 path for Iceberg data
+s3_bucket = "fire-mitigation-data"
+s3_path = f"s3://{s3_bucket}/iceberg-data"
+
 spark = SparkSession.builder \
-    .appName("NASA FIRMS Data Processing") \
+   .appName("NASA FIRMS Data Processing") \
     .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
     .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog") \
     .config("spark.sql.catalog.spark_catalog.type", "hive") \
-    .config("spark.sql.catalog.local", "org.apache.iceberg.spark.SparkCatalog") \
-    .config("spark.sql.catalog.local.type", "hadoop") \
-    .config("spark.sql.catalog.local.warehouse", "s3://fire-mitigation-data/warehouse") \
+    .config("spark.sql.catalog.aws", "org.apache.iceberg.spark.SparkCatalog") \
+    .config("spark.sql.catalog.aws.type", "hadoop") \
+    .config("spark.sql.catalog.aws.warehouse", s3_path) \
+    .config("spark.sql.catalog.aws.s3.endpoint", "s3.amazonaws.com") \
     .getOrCreate()
 
 
@@ -31,7 +36,7 @@ df = df.withColumn("acq_date", to_date("acq_date", "yyyy-MM-dd")) \
        .withColumn("day", dayofmonth("acq_date"))
 
 # Write the data to an Iceberg table
-table_name = "local.db.nasa_firms_data"
+table_name = "aws.db.nasa_firms_data"
 (df.writeTo(table_name)
    .partitionBy("year", "month", "day")
    .tableProperty("write.format.default", "parquet")
