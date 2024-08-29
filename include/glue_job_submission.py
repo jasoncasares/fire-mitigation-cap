@@ -38,62 +38,66 @@ def display_logs_from(paginator, run_id, log_group: str, continuation_token):
         print("No new log from the Glue Job in %s", log_group)
     return next_token
 
-
 def check_job_status(glue_client, job_name, job_run_id):
-    response = glue_client.get_job_run(JobName=job_name, RunId=job_run_id)
-    status = response['JobRun']
-    return status
-
+    """Check the status of a Glue job run."""
+    print(f"Checking status for job {job_name} with run ID {job_run_id}")
+    try:
+        response = glue_client.get_job_run(JobName=job_name, RunId=job_run_id)
+        status = response['JobRun']['JobRunState']
+        print(f"Current job status: {status}")
+        return status
+    except ClientError as e:
+        print(f"Error checking job status: {e}")
+        return 'FAILED'
 
 def create_glue_job(
     job_name,
     script_path,
     arguments,
-    aws_access_key_id,
-    aws_secret_access_key,
-    tabular_credential,
     s3_bucket,
-    catalog_name,
-    aws_region,
     description='Transform CSV data to Parquet format',
     kafka_credentials=None,
     polygon_credentials=None,
     **kwargs
 ):
+    # Use default session which will use environment variables for credentials
+    session = boto3.Session()
+    
     script_path = upload_to_s3(script_path, s3_bucket, 'jobscripts/' + script_path)
 
     if not script_path:
         raise ValueError('Uploading PySpark script to S3 failed!!')
+    
     # we check to see if you passed in any --conf parameters to override the output table
     output_table = kwargs['dag_run'].conf.get('output_table', arguments.get('--output_table', '')) if 'dag_run' in kwargs else arguments.get('--output_table', '')
     arguments['--output_table'] = output_table
 
     spark_configurations = [
         f'spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions',
-        f'spark.sql.defaultCatalog={catalog_name}',
-        f'spark.sql.catalog.{catalog_name}=org.apache.iceberg.spark.SparkCatalog',
-        f'spark.sql.defaultCatalog={catalog_name}',
-        f'spark.sql.catalog.{catalog_name}=org.apache.iceberg.spark.SparkCatalog',
-        f'spark.sql.catalog.{catalog_name}.catalog-impl=org.apache.iceberg.rest.RESTCatalog',
-        f'spark.sql.catalog.{catalog_name}.warehouse={catalog_name}',
-        f'spark.sql.shuffle.partitions=50'
+        f'spark.sql.catalog.iceberg=org.apache.iceberg.spark.SparkCatalog',
+        f'spark.sql.catalog.iceberg.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog',
+        f'spark.sql.catalog.iceberg.warehouse=s3://{s3_bucket}/warehouse',
+        f'spark.sql.defaultCatalog=iceberg',
+        f'spark.sql.shuffle.partitions=50'  # Added closing quote and removed trailing comma
+
     ]
     spark_string = ' --conf '.join(spark_configurations)
 
     # Adding compatibility with Kafka and Iceberg here
     extra_jars_list = [
-        f"s3://{s3_bucket}/jars/iceberg-spark-runtime-3.3_2.12-1.5.2.jar",
-        f"s3://{s3_bucket}/jars/iceberg-aws-bundle-1.5.2.jar",
-        f"s3://{s3_bucket}/jars/spark-sql-kafka-0-10_2.12-3.5.1.jar",
-        f"s3://{s3_bucket}/jars/hadoop-aws-3.2.0.jar"
+        f"s3://{s3_bucket}/on-data/jars/iceberg-spark-runtime-3.3_2.12-1.5.2.jar",
+        f"s3://{s3_bucket}/on-data/jars/iceberg-aws-bundle-1.5.2.jar",
+        f"s3://{s3_bucket}/on-data/jars/spark-sql-kafka-0-10_2.12-3.5.1.jar",
+        f"s3://{s3_bucket}/on-data/jars/hadoop-aws-3.2.0.jar"
     ]
-
     extra_jars = ','.join(extra_jars_list)
 
     python_modules_list = [
-        f's3://{s3_bucket}/python-modules/websocket_client-1.8.0.tar.gz'
+        'websocket_client==1.8.0',
+        'python-dotenv==0.19.2'
     ]
     python_modules = ','.join(python_modules_list)
+
     job_args = {
         'Description': description,
         'Role': 'AWSGlueServiceRole',
@@ -108,21 +112,15 @@ def create_glue_job(
         'DefaultArguments': {
             '--conf': spark_string,
             "--extra-jars": extra_jars,
-            '--additional-python-modules':python_modules
+            '--additional-python-modules': python_modules
         },
         'GlueVersion': '4.0',
         'WorkerType': 'Standard',
         'NumberOfWorkers': 1
     }
 
-    logs_client = boto3.client('logs',
-                               region_name=aws_region,
-                               aws_access_key_id=aws_access_key_id,
-                               aws_secret_access_key=aws_secret_access_key)
-    glue_client = boto3.client("glue",
-                               region_name=aws_region,
-                               aws_access_key_id=aws_access_key_id,
-                               aws_secret_access_key=aws_secret_access_key)
+    logs_client = session.client('logs')
+    glue_client = session.client('glue')
 
     error_continuation_token = None
     output_continuation_token = None
@@ -147,7 +145,6 @@ def create_glue_job(
         arguments['--kafka_credentials'] = kafka_credentials
         arguments['--checkpoint_location'] = f"""s3://{s3_bucket}/kafka-checkpoints/{job_name}"""
 
-
     run_response = glue_client.start_job_run(JobName=job_name,
                                              Arguments=arguments)
     log_group_default = "/aws-glue/jobs/output"
@@ -156,11 +153,11 @@ def create_glue_job(
     paginator = logs_client.get_paginator("filter_log_events")
     while True:
         status = check_job_status(glue_client, job_name, job_run_id)
-        print(f"Job status: {status['JobRunState']}")
-        if status['JobRunState'] in ['SUCCEEDED']:
+        print(f"Job status: {status}")
+        if status == 'SUCCEEDED':
             break
-        elif status['JobRunState'] in ['FAILED', 'STOPPED']:
-            raise ValueError('Job has failed or stopped!')
+        elif status in ['FAILED', 'STOPPED', 'TIMEOUT']:
+            raise ValueError(f'Job has {status}!')
 
         output_continuation_token = display_logs_from(
             paginator, job_run_id, log_group_default,
@@ -170,3 +167,6 @@ def create_glue_job(
                                                      error_continuation_token)
         time.sleep(10)
     return job_name
+
+# Explicitly export the functions
+__all__ = ['display_logs_from', 'check_job_status', 'create_glue_job']

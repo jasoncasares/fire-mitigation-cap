@@ -1,42 +1,26 @@
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, NoCredentialsError
+from dotenv import load_dotenv
 
-def get_secret(secret_name, region_name='us-east-1'):
+# Load environment variables from .env file
+load_dotenv()
 
-    full_secret_name = 'airflow/variables/' + secret_name
-
-    # Create a Secrets Manager client
-    client = boto3.client(
-        service_name='secretsmanager',
-        region_name=region_name
-    )
-
+def test_aws_connectivity():
+    print("Testing AWS connectivity...")
     try:
-        get_secret_value_response = client.get_secret_value(
-            SecretId=full_secret_name
-        )
+        # Use default credentials from environment variables
+        session = boto3.Session()
+        sts = session.client('sts')
+        response = sts.get_caller_identity()
+        print(f"Successfully connected to AWS. Account ID: {response['Account']}")
+        return True
+    except NoCredentialsError:
+        print("No AWS credentials found. Please check your environment variables or AWS configuration.")
     except ClientError as e:
-        # Handle exceptions
-        if e.response['Error']['Code'] == 'DecryptionFailureException':
-            # Secrets Manager can't decrypt the protected secret text using the provided KMS key
-            raise e
-        elif e.response['Error']['Code'] == 'InternalServiceErrorException':
-            # An error occurred on the server side
-            raise e
-        elif e.response['Error']['Code'] == 'InvalidParameterException':
-            # You provided an invalid value for a parameter
-            raise e
-        elif e.response['Error']['Code'] == 'InvalidRequestException':
-            # You provided a parameter value that is not valid for the current state of the resource
-            raise e
-        elif e.response['Error']['Code'] == 'ResourceNotFoundException':
-            # The requested secret was not found
-            raise e
-    else:
-        # Secrets Manager decrypts the secret value using the associated KMS key
-        if 'SecretString' in get_secret_value_response:
-            secret = get_secret_value_response['SecretString']
-        else:
-            secret = get_secret_value_response['SecretBinary']
+        print(f"AWS ClientError: {e}")
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+    return False
 
-    return secret
+if __name__ == "__main__":
+    test_aws_connectivity()
